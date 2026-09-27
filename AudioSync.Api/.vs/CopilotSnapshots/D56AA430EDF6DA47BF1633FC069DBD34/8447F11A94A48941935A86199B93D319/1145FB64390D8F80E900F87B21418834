@@ -1,0 +1,172 @@
+﻿using AudioSync.Api.Interfaces;
+using AudioSync.Api.DTOs;
+using Microsoft.AspNetCore.SignalR;
+
+namespace AudioSync.Api.Hubs
+{
+    public class RoomHub : Hub
+    {
+        private readonly IRoomService _roomService;
+        private readonly IAudioStreamService _audioStreamService;
+        private readonly ILogger<RoomHub> _logger;
+
+        public RoomHub(IRoomService roomService, IAudioStreamService audioStreamService, ILogger<RoomHub> logger)
+        {
+            _roomService = roomService;
+            _audioStreamService = audioStreamService;
+            _logger = logger;
+        }
+
+        public async Task JoinRoom(string roomCode)
+        {
+            var httpContext = Context.GetHttpContext();
+            var userName = httpContext?.Request.Query["username"].FirstOrDefault() ?? "Anonymous";
+
+            var added = await _roomService.AddParticipantAsync(roomCode, Context.ConnectionId, userName);
+            if (!added)
+            {
+                _logger.LogWarning("JoinRoom failed - room not found: {RoomCode}", roomCode);
+                // Optionally, you could throw a HubException to notify client
+                throw new HubException("Room not found");
+            }
+
+            await Groups.AddToGroupAsync(Context.ConnectionId, roomCode);
+
+            _logger.LogInformation("Connection {ConnectionId} joined room {RoomCode} as {UserName}", Context.ConnectionId, roomCode, userName);
+
+            await Clients.Group(roomCode).SendAsync("UserJoined", new { ConnectionId = Context.ConnectionId, UserName = userName, JoinedAt = DateTime.UtcNow });
+
+            // Send current media state to the caller so they can synchronize immediately
+            var mediaState = await _roomService.GetMediaStateAsync(roomCode);
+            if (mediaState != null)
+            {
+                // Send only to the caller
+                await Clients.Caller.SendAsync("PlaybackStateChanged", mediaState);
+            }
+        }
+
+        public async Task LeaveRoom(string roomCode)
+        {
+            var removed = await _roomService.RemoveParticipantAsync(roomCode, Context.ConnectionId);
+            await Groups.RemoveFromGroupAsync(Context.ConnectionId, roomCode);
+
+            if (removed)
+            {
+                _logger.LogInformation("Connection {ConnectionId} left room {RoomCode}", Context.ConnectionId, roomCode);
+                await Clients.Group(roomCode).SendAsync("UserLeft", new { ConnectionId = Context.ConnectionId });
+            }
+            else
+            {
+                _logger.LogWarning("LeaveRoom: participant not found in room {RoomCode}: {ConnectionId}", roomCode, Context.ConnectionId);
+            }
+        }
+
+        public async Task Play(string roomCode)
+        {
+            _logger.LogInformation("Play received from {ConnectionId} for room {RoomCode}", Context.ConnectionId, roomCode);
+
+            // Update media state: set playing = true, update timestamp
+            await _roomService.UpdateMediaAsync(roomCode, null, null, true, null);
+
+            var mediaState = await _roomService.GetMediaStateAsync(roomCode);
+
+            await Clients.Group(roomCode).SendAsync("PlayReceived", new { ConnectionId = Context.ConnectionId, Timestamp = DateTime.UtcNow });
+            if (mediaState != null)
+            {
+                await Clients.Group(roomCode).SendAsync("PlaybackStateChanged", mediaState);
+            }
+        }
+
+        public async Task Pause(string roomCode)
+        {
+            _logger.LogInformation("Pause received from {ConnectionId} for room {RoomCode}", Context.ConnectionId, roomCode);
+
+            // Set playing = false and update timestamp. Position should be set by Seek when needed.
+            await _roomService.UpdateMediaAsync(roomCode, null, null, false, null);
+
+            var mediaState = await _roomService.GetMediaStateAsync(roomCode);
+
+            await Clients.Group(roomCode).SendAsync("PauseReceived", new { ConnectionId = Context.ConnectionId, Timestamp = DateTime.UtcNow });
+            if (mediaState != null)
+            {
+                await Clients.Group(roomCode).SendAsync("PlaybackStateChanged", mediaState);
+            }
+        }
+
+        public async Task Seek(string roomCode, double position)
+        {
+            _logger.LogInformation("Seek received from {ConnectionId} for room {RoomCode} to position {Position}", Context.ConnectionId, roomCode, position);
+
+            // Update position
+            await _roomService.UpdateMediaAsync(roomCode, null, position, null, null);
+
+            var mediaState = await _roomService.GetMediaStateAsync(roomCode);
+
+            await Clients.Group(roomCode).SendAsync("SeekReceived", new { ConnectionId = Context.ConnectionId, Position = position, Timestamp = DateTime.UtcNow });
+            if (mediaState != null)
+            {
+                await Clients.Group(roomCode).SendAsync("PlaybackStateChanged", mediaState);
+            }
+        }
+
+        public async Task LoadMedia(string roomCode, string mediaUrl)
+        {
+            // Treat the caller as host for this load action
+            var hostConnectionId = Context.ConnectionId;
+
+            _logger.LogInformation("LoadMedia received from {ConnectionId} for room {RoomCode}: {MediaUrl}", hostConnectionId, roomCode, mediaUrl);
+
+            // Save media url, reset position to 0, set IsPlaying = false
+            await _roomService.UpdateMediaAsync(roomCode, mediaUrl, 0.0, false, hostConnectionId);
+
+            var mediaState = await _roomService.GetMediaStateAsync(roomCode);
+
+            // Notify group that new media was loaded
+            await Clients.Group(roomCode).SendAsync("MediaLoaded", new { MediaUrl = mediaUrl, LoadedBy = hostConnectionId, Timestamp = DateTime.UtcNow });
+
+            if (mediaState != null)
+            {
+                await Clients.Group(roomCode).SendAsync("PlaybackStateChanged", mediaState);
+            }
+        }
+
+        public override async Task OnDisconnectedAsync(Exception? exception)
+        {
+            // remove from all rooms and notify groups
+            // first find rooms that contained this connection
+            var connectionId = Context.ConnectionId;
+
+            // We will remove the participant from all rooms; but we also need to notify each room's group
+            // Since RoomService does not return the list of rooms removed, we'll enumerate rooms here via GetRoom for simplicity
+
+            // Build a list of rooms that included this connection
+            var roomsToNotify = new List<string>();
+
+            // This is a mild violation of SRP but acceptable for MVP
+            // Accessing internal store via GetRoom and checking participants
+            // Note: GetRoom is thread-safe for reading
+
+            // Get all rooms codes - RoomService does not expose them; to avoid changing the service further, we can attempt to remove from all rooms by calling RemoveParticipantFromAllRoomsAsync and then broadcasting UserLeft to all groups.
+
+
+            await _roomService.RemoveParticipantFromAllRoomsAsync(connectionId);
+
+            // If the disconnected connection was a host for any rooms, stop streaming and notify
+            var roomsWhereHost = _roomService.GetRoomsByHostConnectionId(connectionId);
+            foreach (var roomCode in roomsWhereHost)
+            {
+                // stop stream
+                await _audioStreamService.StopStreamAsync(roomCode, connectionId);
+                _logger.LogInformation("Host disconnected. Stream stopped for room {RoomCode}", roomCode);
+                await Clients.Group(roomCode).SendAsync("StreamStopped", new { RoomCode = roomCode, StoppedBy = connectionId, Timestamp = DateTime.UtcNow });
+            }
+
+            // We cannot know which rooms were affected here without additional API; to keep clients consistent, we will broadcast UserLeft to all groups known by the caller.
+            // For correctness we will not broadcast here; instead, clients receive UserLeft when they explicitly LeaveRoom. Because OnDisconnectedAsync removal may have occurred, but we cannot reliably notify groups without additional data.
+
+            _logger.LogInformation("Connection {ConnectionId} disconnected", connectionId);
+
+            await base.OnDisconnectedAsync(exception);
+        }
+    }
+}

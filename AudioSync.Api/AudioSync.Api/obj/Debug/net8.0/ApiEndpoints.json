@@ -1,0 +1,66 @@
+[
+  {
+    "ContainingType": "AudioSync.Api.Controllers.RoomController",
+    "Method": "Get",
+    "RelativePath": "api/rooms/{roomCode}",
+    "HttpMethod": "GET",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "roomCode",
+        "Type": "System.String",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": []
+  },
+  {
+    "ContainingType": "AudioSync.Api.Controllers.RoomController",
+    "Method": "GetMediaState",
+    "RelativePath": "api/rooms/{roomCode}/media-state",
+    "HttpMethod": "GET",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "roomCode",
+        "Type": "System.String",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": []
+  },
+  {
+    "ContainingType": "AudioSync.Api.Controllers.RoomController",
+    "Method": "Create",
+    "RelativePath": "api/rooms/create",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "dto",
+        "Type": "AudioSync.Api.DTOs.RoomCreateDto",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": []
+  },
+  {
+    "ContainingType": "AudioSync.Api.Controllers.RoomController",
+    "Method": "Join",
+    "RelativePath": "api/rooms/join",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "dto",
+        "Type": "AudioSync.Api.DTOs.RoomJoinDto",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": []
+  }
+]
